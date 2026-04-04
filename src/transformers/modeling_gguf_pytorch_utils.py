@@ -358,6 +358,9 @@ class Gemma4TensorProcessor(TensorProcessor):
 
     def process(self, weights, name, **kwargs):
         # gemma4 norm_shift is 0.0, so no adjustment needed for norm weights (unlike gemma2/3)
+        # layer_output_scale is a buffer in HF (no .weight suffix), but GGUF stores it with .weight
+        if "layer_output_scale" in name:
+            name = name.replace(".weight", "")
         return GGUFTensor(weights, name, {})
 
 
@@ -618,6 +621,15 @@ def load_gguf_checkpoint(gguf_checkpoint_path, return_tensors=False, model_to_lo
             parsed_parameters["config"]["layer_types"] = [
                 "sliding_attention" if is_swa else "full_attention" for is_swa in swa_pattern
             ]
+        # intermediate_size is per-layer array in GGUF; convert to scalar + use_double_wide_mlp
+        gguf_intermediate_size = parsed_parameters["config"].get("intermediate_size")
+        if isinstance(gguf_intermediate_size, list):
+            min_size = min(gguf_intermediate_size)
+            max_size = max(gguf_intermediate_size)
+            parsed_parameters["config"]["intermediate_size"] = min_size
+            if max_size == 2 * min_size:
+                parsed_parameters["config"]["use_double_wide_mlp"] = True
+
         # Enable MoE if experts are present
         if parsed_parameters["config"].get("num_experts") is not None:
             parsed_parameters["config"]["enable_moe_block"] = True
