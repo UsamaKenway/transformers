@@ -353,13 +353,33 @@ class MiniMaxM2TensorProcessor(TensorProcessor):
 
 
 class Gemma4TensorProcessor(TensorProcessor):
+    HF_ROUTER_PROJ_PATTERN = re.compile(r"(?:model\.)?layers\.(?P<bid>\d+)\.router\.proj\.weight")
+    HF_ROUTER_SCALE_PATTERN = re.compile(r"(?:model\.)?layers\.(?P<bid>\d+)\.router\.scale")
+    HF_ROUTER_PER_EXPERT_SCALE_PATTERN = re.compile(r"(?:model\.)?layers\.(?P<bid>\d+)\.router\.per_expert_scale")
+
     def __init__(self, config=None):
         super().__init__(config=config)
+
+    def perform_fallback_tensor_mapping(
+        self, gguf_to_hf_name_map: dict[str, str], suffix: str, qual_name: str, hf_name: str
+    ):
+        # Map router projection weight
+        if m := re.fullmatch(self.HF_ROUTER_PROJ_PATTERN, hf_name):
+            gguf_to_hf_name_map[f"blk.{m['bid']}.ffn_gate_inp.weight"] = qual_name + hf_name
+        # Map router scale (nn.Parameter, no suffix in HF)
+        elif m := re.fullmatch(self.HF_ROUTER_SCALE_PATTERN, hf_name):
+            gguf_to_hf_name_map[f"blk.{m['bid']}.ffn_gate_inp.scale"] = qual_name + hf_name
+        # Map per-expert scale (nn.Parameter, no suffix in HF)
+        elif m := re.fullmatch(self.HF_ROUTER_PER_EXPERT_SCALE_PATTERN, hf_name):
+            gguf_to_hf_name_map[f"blk.{m['bid']}.ffn_down_exps.scale"] = qual_name + hf_name
 
     def process(self, weights, name, **kwargs):
         # gemma4 norm_shift is 0.0, so no adjustment needed for norm weights (unlike gemma2/3)
         # layer_output_scale is a buffer in HF (no .weight suffix), but GGUF stores it with .weight
         if "layer_output_scale" in name:
+            name = name.replace(".weight", "")
+        # Expert tensors in GGUF have .weight suffix but HF uses nn.Parameter (no .weight in state dict)
+        if "ffn_gate_up_exps.weight" in name or "ffn_down_exps.weight" in name:
             name = name.replace(".weight", "")
         return GGUFTensor(weights, name, {})
 
@@ -478,7 +498,7 @@ def get_gguf_hf_weights_map(
     return gguf_to_hf_name_map
 
 
-def load_gguf_checkpoint(gguf_checkpoint_path, return_tensors=False, model_to_load=None):
+def load_gguf_checkpoint(gguf_checkpoint_path, return_tensors=False, model_to_load=None, torch_dtype=None):
     """
     Load a GGUF file and return a dictionary of parsed parameters containing tensors, the parsed
     tokenizer and config attributes.
@@ -634,6 +654,20 @@ def load_gguf_checkpoint(gguf_checkpoint_path, return_tensors=False, model_to_lo
         if parsed_parameters["config"].get("num_experts") is not None:
             parsed_parameters["config"]["enable_moe_block"] = True
 
+        # Detect attention_k_eq_v: global layers in gemma4 26B share K/V projections
+        # (no separate attn_v tensor in GGUF for full-attention layers)
+        swa_pattern = parsed_parameters["config"].get("sliding_window_pattern")
+        if swa_pattern and isinstance(swa_pattern, list):
+            global_layer_indices = [i for i, is_swa in enumerate(swa_pattern) if not is_swa]
+            if global_layer_indices:
+                has_v_proj = any(
+                    tensor.name == f"blk.{idx}.attn_v.weight"
+                    for idx in global_layer_indices
+                    for tensor in reader.tensors
+                )
+                if not has_v_proj:
+                    parsed_parameters["config"]["attention_k_eq_v"] = True
+
     # MiniMax-M2: convert expert_gating_func integer to scoring_func string
     if parsed_parameters["config"].get("model_type") == "minimax_m2":
         _gating_func_map = {0: "none", 1: "softmax", 2: "sigmoid"}
@@ -695,7 +729,10 @@ def load_gguf_checkpoint(gguf_checkpoint_path, return_tensors=False, model_to_lo
 
             name = tensor_key_mapping[name]
 
-            parsed_parameters["tensors"][name] = torch.from_numpy(np.copy(weights))
+            tensor = torch.from_numpy(np.copy(weights))
+            if torch_dtype is not None and torch_dtype != torch.float32:
+                tensor = tensor.to(torch_dtype)
+            parsed_parameters["tensors"][name] = tensor
 
     if len(reader_keys) > 0:
         logger.info(f"Some keys of the GGUF file were not considered: {reader_keys}")
