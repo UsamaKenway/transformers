@@ -352,6 +352,32 @@ class MiniMaxM2TensorProcessor(TensorProcessor):
             out.copy_(torch_weights)
 
 
+class Gemma4TensorProcessor(TensorProcessor):
+    HF_ROUTER_PROJ_PATTERN = re.compile(r"(?:model\.)?layers\.(?P<bid>\d+)\.router\.proj\.weight")
+    HF_ROUTER_SCALE_PATTERN = re.compile(r"(?:model\.)?layers\.(?P<bid>\d+)\.router\.scale")
+    HF_ROUTER_PER_EXPERT_SCALE_PATTERN = re.compile(r"(?:model\.)?layers\.(?P<bid>\d+)\.router\.per_expert_scale")
+
+    def __init__(self, config=None):
+        super().__init__(config=config)
+
+    def perform_fallback_tensor_mapping(
+        self, gguf_to_hf_name_map: dict[str, str], suffix: str, qual_name: str, hf_name: str
+    ):
+        if m := re.fullmatch(self.HF_ROUTER_PROJ_PATTERN, hf_name):
+            gguf_to_hf_name_map[f"blk.{m['bid']}.ffn_gate_inp.weight"] = qual_name + hf_name
+        elif m := re.fullmatch(self.HF_ROUTER_SCALE_PATTERN, hf_name):
+            gguf_to_hf_name_map[f"blk.{m['bid']}.ffn_gate_inp.scale"] = qual_name + hf_name
+        elif m := re.fullmatch(self.HF_ROUTER_PER_EXPERT_SCALE_PATTERN, hf_name):
+            gguf_to_hf_name_map[f"blk.{m['bid']}.ffn_down_exps.scale"] = qual_name + hf_name
+
+    def process(self, weights, name, **kwargs):
+        if "layer_output_scale" in name:
+            name = name.replace(".weight", "")
+        if "ffn_gate_up_exps.weight" in name or "ffn_down_exps.weight" in name:
+            name = name.replace(".weight", "")
+        return GGUFTensor(weights, name, {})
+
+
 TENSOR_PROCESSORS = {
     "llama": LlamaTensorProcessor,
     "qwen2moe": Qwen2MoeTensorProcessor,
@@ -364,6 +390,7 @@ TENSOR_PROCESSORS = {
     "nemotron": NemotronTensorProcessor,
     "gemma2": Gemma2TensorProcessor,
     "gemma3": Gemma2TensorProcessor,
+    "gemma4": Gemma4TensorProcessor,
     "lfm2": Lfm2TensorProcessor,
     "minimax-m2": MiniMaxM2TensorProcessor,
 }
@@ -412,6 +439,8 @@ def get_gguf_hf_weights_map(
         model_type = "qwen3moe"
     elif model_type == "gemma3_text":
         model_type = "gemma3"
+    elif model_type == "gemma4_text":
+        model_type = "gemma4"
     elif model_type == "umt5":
         model_type = "t5"
     elif model_type == "minimax_m2":
@@ -582,6 +611,51 @@ def load_gguf_checkpoint(gguf_checkpoint_path, return_tensors=False, model_to_lo
     # Gemma3 GGUF checkpoint only contains weights of text backbone
     if parsed_parameters["config"]["model_type"] == "gemma3":
         parsed_parameters["config"]["model_type"] = "gemma3_text"
+
+    # Gemma4 GGUF checkpoint only contains weights of text backbone
+    if parsed_parameters["config"]["model_type"] == "gemma4":
+        parsed_parameters["config"]["model_type"] = "gemma4_text"
+        # num_key_value_heads is per-layer array in GGUF; extract SWA and global values
+        gguf_num_kv_heads = parsed_parameters["config"].get("num_key_value_heads")
+        if isinstance(gguf_num_kv_heads, list):
+            swa_pattern = parsed_parameters["config"].get("sliding_window_pattern")
+            if swa_pattern and isinstance(swa_pattern, list):
+                swa_kv = [h for h, s in zip(gguf_num_kv_heads, swa_pattern) if s]
+                global_kv = [h for h, s in zip(gguf_num_kv_heads, swa_pattern) if not s]
+                parsed_parameters["config"]["num_key_value_heads"] = swa_kv[0] if swa_kv else gguf_num_kv_heads[0]
+                if global_kv:
+                    parsed_parameters["config"]["num_global_key_value_heads"] = global_kv[0]
+            else:
+                parsed_parameters["config"]["num_key_value_heads"] = max(gguf_num_kv_heads)
+        # Derive layer_types from sliding_window_pattern
+        swa_pattern = parsed_parameters["config"].get("sliding_window_pattern")
+        if swa_pattern and isinstance(swa_pattern, list):
+            parsed_parameters["config"]["layer_types"] = [
+                "sliding_attention" if is_swa else "full_attention" for is_swa in swa_pattern
+            ]
+        # intermediate_size is per-layer array in GGUF; convert to scalar + use_double_wide_mlp
+        gguf_intermediate_size = parsed_parameters["config"].get("intermediate_size")
+        if isinstance(gguf_intermediate_size, list):
+            min_size = min(gguf_intermediate_size)
+            max_size = max(gguf_intermediate_size)
+            parsed_parameters["config"]["intermediate_size"] = min_size
+            if max_size == 2 * min_size:
+                parsed_parameters["config"]["use_double_wide_mlp"] = True
+        # Enable MoE if experts are present
+        if parsed_parameters["config"].get("num_experts") is not None:
+            parsed_parameters["config"]["enable_moe_block"] = True
+        # Detect attention_k_eq_v: global layers in gemma4 26B share K/V projections
+        swa_pattern = parsed_parameters["config"].get("sliding_window_pattern")
+        if swa_pattern and isinstance(swa_pattern, list):
+            global_layer_indices = [i for i, is_swa in enumerate(swa_pattern) if not is_swa]
+            if global_layer_indices:
+                has_v_proj = any(
+                    tensor.name == f"blk.{idx}.attn_v.weight"
+                    for idx in global_layer_indices
+                    for tensor in reader.tensors
+                )
+                if not has_v_proj:
+                    parsed_parameters["config"]["attention_k_eq_v"] = True
 
     # MiniMax-M2: convert expert_gating_func integer to scoring_func string
     if parsed_parameters["config"].get("model_type") == "minimax_m2":
