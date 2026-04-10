@@ -313,6 +313,8 @@ class GgufModelTests(unittest.TestCase):
     lfm2_model_id = "LiquidAI/LFM2-1.2B-GGUF"
     gemma4_26b_model_id = "lmstudio-community/gemma-4-26B-A4B-it-GGUF"
     gemma4_31b_model_id = "lmstudio-community/gemma-4-31B-it-GGUF"
+    unsloth_gemma4_31b_model_id = "unsloth/gemma-4-31B-it-GGUF"
+    ggml_org_gemma4_31b_model_id = "ggml-org/gemma-4-31B-it-GGUF"
 
     q4_0_phi3_model_id = "Phi-3-mini-4k-instruct-q4.gguf"
     q4_0_mistral_model_id = "mistral-7b-instruct-v0.2.Q4_0.gguf"
@@ -1190,4 +1192,32 @@ class GgufModelTests(unittest.TestCase):
         out = model.generate(text, max_new_tokens=10)
 
         EXPECTED_TEXT = "HelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+        self.assertEqual(tokenizer.decode(out[0], skip_special_tokens=True), EXPECTED_TEXT)
+
+    def test_unsloth_gemma4_31b_q4_k_m(self):
+        tokenizer = AutoTokenizer.from_pretrained(self.unsloth_gemma4_31b_model_id, gguf_file=self.q4_k_m_gemma4_31b_model_id)
+        model = AutoModelForCausalLM.from_pretrained(
+            self.unsloth_gemma4_31b_model_id,
+            gguf_file=self.q4_k_m_gemma4_31b_model_id,
+            dtype=torch.float16,
+        )
+
+        text = tokenizer(self.example_text, return_tensors="pt")["input_ids"]
+        out = model.generate(text, max_new_tokens=10)
+
+        EXPECTED_TEXT = "HelloKelloKelloKelloKelloKello"
+        self.assertEqual(tokenizer.decode(out[0], skip_special_tokens=True), EXPECTED_TEXT)
+
+    def test_ggml_org_gemma4_31b_q4_k_m(self):
+        tokenizer = AutoTokenizer.from_pretrained(self.ggml_org_gemma4_31b_model_id, gguf_file=self.q4_k_m_gemma4_31b_model_id)
+        model = AutoModelForCausalLM.from_pretrained(
+            self.ggml_org_gemma4_31b_model_id,
+            gguf_file=self.q4_k_m_gemma4_31b_model_id,
+            dtype=torch.float16,
+        )
+
+        text = tokenizer(self.example_text, return_tensors="pt")["input_ids"]
+        out = model.generate(text, max_new_tokens=10)
+
+        EXPECTED_TEXT = "HelloKelloKelloKelloKelloKello"
         self.assertEqual(tokenizer.decode(out[0], skip_special_tokens=True), EXPECTED_TEXT)
