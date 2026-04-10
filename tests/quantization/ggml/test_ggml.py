@@ -1205,7 +1205,7 @@ class GgufModelTests(unittest.TestCase):
         text = tokenizer(self.example_text, return_tensors="pt")["input_ids"]
         out = model.generate(text, max_new_tokens=10)
 
-        EXPECTED_TEXT = "HelloKelloKelloKelloKelloKello"
+        EXPECTED_TEXT = 'Hello5.txt`e`echo "Hello World'
         self.assertEqual(tokenizer.decode(out[0], skip_special_tokens=True), EXPECTED_TEXT)
 
     def test_ggml_org_gemma4_31b_q4_k_m(self):
