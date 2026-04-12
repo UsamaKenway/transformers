@@ -4086,9 +4086,8 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
                 if isinstance(resolved, torch.dtype) and resolved != torch.float32:
                     gguf_dtype = resolved
             state_dict = load_gguf_checkpoint(
-                checkpoint_files[0], return_tensors=True, model_to_load=dummy_model, torch_dtype=gguf_dtype
+                checkpoint_files[0], return_tensors=True, model_to_load=dummy_model, torch_dtype=None # testing
             )["tensors"]
-
         # Find the correct dtype based on current state
         config, dtype = _get_dtype(
             dtype, checkpoint_files, config, sharded_metadata, state_dict, weights_only, hf_quantizer

@@ -734,6 +734,12 @@ def load_gguf_checkpoint(gguf_checkpoint_path, return_tensors=False, model_to_lo
                 tensor = tensor.to(torch_dtype)
             parsed_parameters["tensors"][name] = tensor
 
+    # === TEMPORARY PEAK RAM TRACKING ===
+    import resource
+    peak_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    print(f"\n[RAM DEBUG] Global Peak RSS (High Water Mark): {peak_kb / 1024:.2f} MB", flush=True)
+    # ===================================
+
     if len(reader_keys) > 0:
         logger.info(f"Some keys of the GGUF file were not considered: {reader_keys}")
 
