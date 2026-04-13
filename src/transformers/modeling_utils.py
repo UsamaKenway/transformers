@@ -4075,6 +4075,8 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         config, dtype = _get_dtype(
             dtype, checkpoint_files, config, sharded_metadata, state_dict, weights_only, hf_quantizer
         )
+        logger.info(f"Dtype: {dtype}")
+
 
         if gguf_file:
             from .modeling_gguf_pytorch_utils import load_gguf_checkpoint

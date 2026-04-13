@@ -659,3 +659,12 @@ def load_gguf_checkpoint(gguf_checkpoint_path, return_tensors=False, model_to_lo
         logger.info(f"Some keys of the GGUF file were not considered: {reader_keys}")
 
     return parsed_parameters
+
+# === TEMPORARY PEAK RAM TRACKING ===
+try:
+    import resource
+    peak_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    print(f'\n[RAM DEBUG] Global Peak RSS (High Water Mark): {peak_kb / 1024:.2f} MB', flush=True)
+except ImportError:
+    print('\n[RAM DEBUG] resource module not available on this platform (win32)')
+# ===================================
